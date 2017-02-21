@@ -2,6 +2,7 @@
 
 import numpy as np
 import argparse
+import math
 from datetime import datetime as dt
 
 WORLD = np.array([
@@ -102,19 +103,41 @@ def choose_action(s, epsilon):
     return np.random.choice(ACTIONS, p=PI[s, :])  # sample from ACTIONS with proba distribution PI[s, :]
 
 
-def choose_sigma(method, last_sigma=1):
+def choose_sigma(method, q_mode, last_sigma=None, base=None, t=None):
     """
     Return a sigma for the Q(sigma) algorithm according to a given method
     :param method: the algorithm to follow: SARSA, or TreeBackup, or Qsigma
-    :return: 1 for SARSA, 0 for TreeBackup, an alternating bit for Qsigma
+    :param q_mode: Qsigma mode (only if method='Qsigma'): random, alternative, decreasing, or increasing mode
+    :param last_sigma: the previous sigma returned by this function (only used for Qsigma in alternating mode)
+    :param base: base of the logarithm to take (only used in non-alternating mode)
+    :param t: current time step (only used for Qsigma in non-alternating mode)
+    :return: 1 for SARSA, 0 for TreeBackup, 1 with probability p for Qsigma (in non-alternating mode)
     """
     if method == "SARSA":
         return 1
     elif method == "TreeBackup":
         return 0
     elif method == "Qsigma":
-        # return 1 if np.random.random() < 0.5 else 0
-        return 1 - last_sigma
+        if q_mode == "rnd":  # RANDOM mode
+            return 1 if np.random.random() < 0.5 else 0
+        elif q_mode == "alt":  # ALTERNATING mode
+            assert last_sigma in [0, 1]
+            return 1 - last_sigma
+        elif q_mode == "inc":  # INCREASING probability mode
+            assert base >= 3
+            assert t >= 0
+            sample_proba = 1 - math.exp(-math.log(1+t, base))  # increases with t
+            # print "t =", t, "& P(sig=1) =", sample_proba
+            return 1 if np.random.random() < sample_proba else 0
+        elif q_mode == "dec":  # DECREASING probability mode
+            assert base >= 3
+            assert t >= 0
+            sample_proba = math.exp(-math.log(1+t, base))  # decreases with t
+            # print "t =", t, "& P(sig=1) =", sample_proba
+            return 1 if np.random.random() < sample_proba else 0
+        else:
+            print "ERROR: use Qsigma but no mode specified: random, alternating, increasing or decreasing?"
+            return None
     else:
         print "ERROR: unknown method", method
         return None
@@ -214,6 +237,12 @@ def main():
             raise argparse.ArgumentTypeError("%r not in range [0.0, 1.0]" % x)
         return x
 
+    def my_int(x):  # Custom type for argparse arguments: base
+        x = int(x)
+        if x < 3:
+            raise argparse.ArgumentTypeError("%r lower than 3" % x)
+        return x
+
     parser = argparse.ArgumentParser(description='MDP SARSA vs Expected SARSA.')
     parser.add_argument(
         'method',
@@ -243,6 +272,15 @@ def main():
     parser.add_argument(
         '-b', '--beta', type=my_float, default=0.0,
         help="probability of no velocity update. ie: Stochasticity of environment."
+    )
+    parser.add_argument(
+        '--q_mode', default="alt",
+        choices=["rnd", "alt", "dec", "inc"],
+        help="Qsigma mode - rnd: P(sigma=1)=0.5, alt:alternate sigmas, dec: P(sigma=1) decreases over time, inc: P(sigma=1) increases over time. (Only used if args.method='Qsigma')"
+    )
+    parser.add_argument(
+        '--base', type=my_int, default=50,
+        help="base of the logarithm used in probability of sampling in alternating Qsigma. Lower values = probability changing quickly; Higher values = probability changing slower."
     )
     args = parser.parse_args()
     print args
@@ -309,7 +347,8 @@ def main():
                         a_next = choose_action(states[t+1], args.epsilon)  # select A_{t+1} ~ S_{t+1}
                         actions.append(a_next)  # store A_{t+1}
                         # print "action chosen:", a_next
-                        sig = choose_sigma(args.method, sigmas[-1])  # select sigma according to method and last sigma(only for Qsigma)
+                        sig = choose_sigma(args.method, args.q_mode, last_sigma=sigmas[-1], base=args.base, t=t)  # select sigma according to method and Qsigma mode
+                        # print "sigma chosen:", sig
                         sigmas.append(sig)  # store sigma_{t+1}
                         q.append(Q[s_next, a_next])  # store Q_{t+1} = Q[S_{t+1}, A_{t+1}]
                         target = r + sig*args.gamma*q[t+1] + (1-sig)*args.gamma*np.sum(PI[s_next, :]*Q[s_next, :]) - q[t]
